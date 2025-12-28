@@ -50,9 +50,12 @@ void MQTTGateway::loop() {
    ============================================================ */
 void MQTTGateway::reconnect() {
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[MQTT] WiFi lost → cannot reconnect MQTT");
-        return;
+        Serial.println("[WiFi] Lost → reconnecting...");
+        WiFi.disconnect();
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        delay(1000);  // chờ kết nối lại
     }
+
 
     Serial.print("[MQTT] Connecting to broker...");
     if (mqtt.connect("SmartFarmGateway", MQTT_USER, MQTT_PASS)) {
@@ -82,7 +85,9 @@ void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePa
 
     if (!mqtt.connected()) {
         Serial.println("[MQTT] Not connected → skip publish");
-        return;
+        reconnect();
+        delay(50);
+
     }
 
     String macStr = macToString(mac);
@@ -233,6 +238,7 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
     }
 
     // UPTIME
+    /*
     {
         String uid = macStr + "_uptime";
         String topic = "homeassistant/sensor/" + uid + "/config";
@@ -249,6 +255,7 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
     }
 
     // LAST SEEN
+    /*
     {
         String uid = macStr + "_last_seen";
         String topic = "homeassistant/sensor/" + uid + "/config";
@@ -265,6 +272,7 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
     }
 
     // FIRMWARE
+/*
     {
         String uid = macStr + "_fw";
         String topic = "homeassistant/sensor/" + uid + "/config";
@@ -278,6 +286,7 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
 
         mqtt.publish(topic.c_str(), payload.c_str(), true);
     }
+        */
 }
 
 /* ============================================================
