@@ -43,6 +43,9 @@ void MQTTGateway::loop() {
         reconnect();
     }
     mqtt.loop();
+
+    // ==== NEW V1.8: xử lý queue MQTT ====
+    processQueue();
 }
 
 /* ============================================================
@@ -75,8 +78,66 @@ String MQTTGateway::macToString(const uint8_t *mac) {
 }
 
 /* ============================================================
-   NEW VERSION — publishSensorFrame()
+   NEW V1.8 – QUEUE HELPERS
    ============================================================ */
+void MQTTGateway::enqueue(const String &topic, const String &payload, bool retain) {
+    // Giới hạn queue để tránh tràn RAM
+    if (mqttQueue.size() > 100) {
+        Serial.println("[MQTT][QUEUE] Overflow → dropping");
+        return;
+    }
+
+    // Không cho phép topic/payload rỗng
+    if (topic.isEmpty() || payload.isEmpty()) {
+        Serial.println("[MQTT][QUEUE] Empty topic/payload → skip");
+        return;
+    }
+
+    PendingMsg msg;
+    msg.topic = topic;
+    msg.payload = payload;
+    msg.retain = retain;
+
+    mqttQueue.push_back(msg);
+}
+
+
+void MQTTGateway::processQueue() {
+    if (!mqtt.connected()) return;
+    if (mqttQueue.empty()) return;
+
+    PendingMsg msg = mqttQueue.front();
+    mqttQueue.erase(mqttQueue.begin());
+
+    // Bảo vệ dữ liệu
+    if (msg.topic.isEmpty() || msg.payload.isEmpty()) {
+        Serial.println("[MQTT][QUEUE] Skip empty topic/payload");
+        return;
+    }
+
+    // Payload quá lớn → PubSubClient crash
+    if (msg.payload.length() > 512) {
+        Serial.println("[MQTT][QUEUE] Payload too large → skip");
+        return;
+    }
+
+    const char* topicCStr = msg.topic.c_str();
+    const char* payloadCStr = msg.payload.c_str();
+
+    if (topicCStr == nullptr || payloadCStr == nullptr) {
+        Serial.println("[MQTT][QUEUE] Null pointer detected → skip");
+        return;
+    }
+
+    mqtt.publish(topicCStr, payloadCStr, msg.retain);
+}
+
+
+/* ============================================================
+   publishSensorFrame() – GIỜ CHỈ ENQUEUE MQTT
+   ============================================================ */
+// OLD VERSION (publish trực tiếp)
+/*
 void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePayload &payload) {
     Serial.println("[MQTT] publishSensorFrame()");
 
@@ -88,42 +149,85 @@ void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePa
     String macStr = macToString(mac);
     Serial.printf("[MQTT] MAC=%s, count=%d\n", macStr.c_str(), payload.count);
 
-    // Publish từng sensor
     for (int i = 0; i < payload.count; i++) {
         const SFM_SensorValue &v = payload.values[i];
 
-        // 🔥 NEW: MQTT Discovery cho sensor
         publishDiscovery(macStr, v);
 
-        // value1
         String topic1 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name + "/value1";
         String valueStr1 = String(v.value1, 2);
         mqtt.publish(topic1.c_str(), valueStr1.c_str());
-        Serial.printf("[MQTT] → %s = %s\n", topic1.c_str(), valueStr1.c_str());
 
-        // value2
         if (v.value2 != 0.0f) {
             String topic2 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name + "/value2";
             String valueStr2 = String(v.value2, 2);
             mqtt.publish(topic2.c_str(), valueStr2.c_str());
-            Serial.printf("[MQTT] → %s = %s\n", topic2.c_str(), valueStr2.c_str());
         }
     }
 
-    // Publish status = online
     String statusTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/status";
     mqtt.publish(statusTopic.c_str(), "online");
-    Serial.printf("[MQTT] → %s = online\n", statusTopic.c_str());
 
-    // Publish uptimeMs
     String uptimeTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/uptimeMs";
     String uptimeStr = String(payload.uptimeMs);
     mqtt.publish(uptimeTopic.c_str(), uptimeStr.c_str());
-    Serial.printf("[MQTT] → %s = %s\n", uptimeTopic.c_str(), uptimeStr.c_str());
+}
+*/
+
+void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePayload &payload) {
+    Serial.println("[MQTT] publishSensorFrame()");
+
+    if (!mqtt.connected()) {
+        Serial.println("[MQTT] Not connected → enqueue vẫn được, nhưng MQTT chưa online");
+        // Vẫn cho enqueue để khi reconnect thì gửi dần
+    }
+
+    String macStr = macToString(mac);
+    Serial.printf("[MQTT] MAC=%s, count=%d\n", macStr.c_str(), payload.count);
+
+    for (int i = 0; i < payload.count; i++) {
+        const SFM_SensorValue &v = payload.values[i];
+
+        // MQTT Discovery (config) – dùng retain, nên enqueue với retain=true
+        publishDiscovery(macStr, v);
+
+        // VALUE1
+        String topic1 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name + "/value1";
+        String valueStr1 = String(v.value1, 2);
+        // mqtt.publish(topic1.c_str(), valueStr1.c_str());
+        enqueue(topic1, valueStr1, false);
+        Serial.printf("[MQTT][ENQUEUE] %s = %s\n", topic1.c_str(), valueStr1.c_str());
+
+        // VALUE2 (nếu khác 0.0)
+        if (v.value2 != 0.0f) {
+            String topic2 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name + "/value2";
+            String valueStr2 = String(v.value2, 2);
+            // mqtt.publish(topic2.c_str(), valueStr2.c_str());
+            enqueue(topic2, valueStr2, false);
+            Serial.printf("[MQTT][ENQUEUE] %s = %s\n", topic2.c_str(), valueStr2.c_str());
+        }
+    }
+
+    // STATUS = online
+    {
+        String statusTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/status";
+        // mqtt.publish(statusTopic.c_str(), "online");
+        enqueue(statusTopic, "online", false);
+        Serial.printf("[MQTT][ENQUEUE] %s = online\n", statusTopic.c_str());
+    }
+
+    // UPTIME
+    {
+        String uptimeTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/uptimeMs";
+        String uptimeStr = String(payload.uptimeMs);
+        // mqtt.publish(uptimeTopic.c_str(), uptimeStr.c_str());
+        enqueue(uptimeTopic, uptimeStr, false);
+        Serial.printf("[MQTT][ENQUEUE] %s = %s\n", uptimeTopic.c_str(), uptimeStr.c_str());
+    }
 }
 
 /* ============================================================
-   SENSOR DISCOVERY
+   SENSOR DISCOVERY – dùng enqueue + retain
    ============================================================ */
 void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &v) {
     String base = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name;
@@ -156,7 +260,9 @@ void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &
         payload += "}";
         payload += "}";
 
-        mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+        // mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+        enqueue(configTopic, payload, true);
+        Serial.printf("[MQTT][DISCOVERY ENQUEUE] %s\n", configTopic.c_str());
     }
 
     // VALUE2
@@ -183,12 +289,14 @@ void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &
         payload += "}";
         payload += "}";
 
-        mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+        // mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+        enqueue(configTopic, payload, true);
+        Serial.printf("[MQTT][DISCOVERY ENQUEUE] %s\n", configTopic.c_str());
     }
 }
 
 /* ============================================================
-   NEW V1.8 — NODE AUTO‑DISCOVERY
+   NODE AUTO-DISCOVERY – dùng enqueue + retain
    ============================================================ */
 void MQTTGateway::publishNodeDiscovery(const String &macStr) {
     String base = String(MQTT_BASE_TOPIC) + "/" + macStr;
@@ -212,7 +320,8 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
         payload += "}";
         payload += "}";
 
-        mqtt.publish(topic.c_str(), payload.c_str(), true);
+        // mqtt.publish(topic.c_str(), payload.c_str(), true);
+        enqueue(topic, payload, true);
     }
 
     // RSSI
@@ -229,7 +338,8 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
         payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
         payload += "}";
 
-        mqtt.publish(topic.c_str(), payload.c_str(), true);
+        // mqtt.publish(topic.c_str(), payload.c_str(), true);
+        enqueue(topic, payload, true);
     }
 
     // UPTIME
@@ -245,7 +355,8 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
         payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
         payload += "}";
 
-        mqtt.publish(topic.c_str(), payload.c_str(), true);
+        // mqtt.publish(topic.c_str(), payload.c_str(), true);
+        enqueue(topic, payload, true);
     }
 
     // LAST SEEN
@@ -261,7 +372,8 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
         payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
         payload += "}";
 
-        mqtt.publish(topic.c_str(), payload.c_str(), true);
+        // mqtt.publish(topic.c_str(), payload.c_str(), true);
+        enqueue(topic, payload, true);
     }
 
     // FIRMWARE
@@ -276,22 +388,34 @@ void MQTTGateway::publishNodeDiscovery(const String &macStr) {
         payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
         payload += "}";
 
-        mqtt.publish(topic.c_str(), payload.c_str(), true);
+        // mqtt.publish(topic.c_str(), payload.c_str(), true);
+        enqueue(topic, payload, true);
     }
 }
 
 /* ============================================================
-   NEW V1.8 — NODE STATUS
+   NODE STATUS – dùng enqueue
+   - last_seen gửi đúng định dạng ISO 8601 (Home Assistant yêu cầu cho device_class: timestamp)
+
    ============================================================ */
 void MQTTGateway::publishNodeStatus(const String &macStr, const SFM_HeartbeatPayload &hb) {
     String base = String(MQTT_BASE_TOPIC) + "/" + macStr;
 
-    mqtt.publish((base + "/status").c_str(), "online");
-    mqtt.publish((base + "/rssi").c_str(), String(hb.rssi).c_str());
-    mqtt.publish((base + "/uptimeMs").c_str(), String(hb.uptimeMs).c_str());
-    mqtt.publish((base + "/last_seen").c_str(), String(millis()).c_str());
-    mqtt.publish((base + "/fw_version").c_str(), "V1.8");
+    enqueue(base + "/status", "online", false);
+    enqueue(base + "/rssi", String(hb.rssi), false);
+    enqueue(base + "/uptimeMs", String(hb.uptimeMs), false);
+
+    // LAST SEEN — ISO 8601 timestamp
+    time_t now = time(nullptr);
+    struct tm *timeinfo = gmtime(&now);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", timeinfo);
+    enqueue(base + "/last_seen", String(buf), false);
+
+    enqueue(base + "/fw_version", "V1.8", false);
 }
+
+
 
 /* ============================================================
    SENSOR META

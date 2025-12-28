@@ -7,7 +7,7 @@
 #define ROLE_NODE      2
 
 //#define DEVICE_ROLE ROLE_GATEWAY
-#define DEVICE_ROLE ROLE_NODE
+#define DEVICE_ROLE ROLE_GATEWAY
 
 
 #define SFM_WIFI_CHANNEL       6

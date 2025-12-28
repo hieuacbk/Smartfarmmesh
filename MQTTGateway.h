@@ -5,6 +5,7 @@
 #include <PubSubClient.h>
 #include "MQTTConfig.h"
 #include "MeshTypes.h"
+#include <vector>
 
 class MQTTGateway {
 public:
@@ -35,8 +36,25 @@ private:
     WiFiClient wifiClient;
     PubSubClient mqtt;
 
-    void reconnect();
+    //void reconnect();
     //String macToString(const uint8_t *mac);
+
+    // ==== NEW V1.8 – MQTT QUEUE ====
+    struct PendingMsg {
+        String topic;
+        String payload;
+        bool retain;
+    };
+
+    std::vector<PendingMsg> mqttQueue;
+
+    void reconnect();
+
+    // Queue helpers
+    void enqueue(const String &topic, const String &payload, bool retain = false);
+    void processQueue();
+
+
 };
 
 #endif
