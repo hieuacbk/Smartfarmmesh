@@ -20,3 +20,32 @@ private:
 };
 
 #endif
+
+/*Sensor template
+#ifndef SENSOR_TEMPLATE_H
+#define SENSOR_TEMPLATE_H
+
+#include "SensorPlugin.h"
+
+class Sensor_Template : public SensorPlugin {
+public:
+    // Constructor: truyền vào pin hoặc config nếu cần
+    Sensor_Template(int pin);
+
+    // Tên sensor (tối đa 15 ký tự)
+    const char* getName() override { return "TEMPLATE"; }
+
+    // Khởi tạo sensor
+    bool begin() override;
+
+    // Đọc sensor → trả về value1, value2
+    bool read(float &v1, float &v2) override;
+
+private:
+    int _pin;
+};
+#endif
+
+
+
+*/

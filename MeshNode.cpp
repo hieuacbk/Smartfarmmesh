@@ -182,6 +182,13 @@ void MeshNode::handleHeartbeat(const uint8_t *mac, const SFM_HeartbeatPayload &p
     if (DEVICE_ROLE == ROLE_GATEWAY) {
         int idx = addOrUpdateNode(mac, payload.nodeId, payload.rssi);
         if (idx >= 0) logNodeBrief(idx);
+         
+        // 🔥 NEW V1.8 — Node Auto Discovery
+
+        String macStr = mqttGateway.macToString(mac);
+        mqttGateway.publishNodeDiscovery(macStr);
+        mqttGateway.publishNodeStatus(macStr, payload);
+
 
         if (!ensurePeer(mac)) return;
 
@@ -191,7 +198,10 @@ void MeshNode::handleHeartbeat(const uint8_t *mac, const SFM_HeartbeatPayload &p
         header.payloadLen = 0;
 
         sendTo(mac, (uint8_t*)&header, sizeof(header));
+
     }
+
+
 }
 
 /* ============ OLD HANDLE SENSOR (chỉ log) ============
