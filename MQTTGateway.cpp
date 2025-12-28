@@ -1,5 +1,8 @@
 #include "MQTTGateway.h"
 
+/* ============================================================
+   CONSTRUCTOR
+   ============================================================ */
 MQTTGateway::MQTTGateway() : mqtt(wifiClient) {}
 
 /* ============================================================
@@ -72,39 +75,7 @@ String MQTTGateway::macToString(const uint8_t *mac) {
 }
 
 /* ============================================================
-   OLD VERSION (để bạn so sánh)
-   ============================================================ */
-/*
-void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePayload &payload) {
-    Serial.println("[MQTT] publishSensorFrame()");
-
-    if (!mqtt.connected()) {
-        Serial.println("[MQTT] Not connected → skip publish");
-        return;
-    }
-
-    String macStr = macToString(mac);
-    Serial.printf("[MQTT] MAC=%s, count=%d\n", macStr.c_str(), payload.count);
-
-    for (int i = 0; i < payload.count; i++) {
-        String topic1 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + payload.values[i].name + "/value1";
-        String topic2 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + payload.values[i].name + "/value2";
-
-        Serial.printf("[MQTT] → %s = %.2f\n", topic1.c_str(), payload.values[i].value1);
-        Serial.printf("[MQTT] → %s = %.2f\n", topic2.c_str(), payload.values[i].value2);
-
-        mqtt.publish(topic1.c_str(), String(payload.values[i].value1).c_str());
-        mqtt.publish(topic2.c_str(), String(payload.values[i].value2).c_str());
-    }
-
-    String statusTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/status";
-    mqtt.publish(statusTopic.c_str(), "online");
-    Serial.printf("[MQTT] → %s = online\n", statusTopic.c_str());
-}
-*/
-
-/* ============================================================
-   NEW VERSION — mở rộng publish MQTT
+   NEW VERSION — publishSensorFrame()
    ============================================================ */
 void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePayload &payload) {
     Serial.println("[MQTT] publishSensorFrame()");
@@ -120,8 +91,8 @@ void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePa
     // Publish từng sensor
     for (int i = 0; i < payload.count; i++) {
         const SFM_SensorValue &v = payload.values[i];
-        
-        // 🔥 NEW: MQTT Discovery
+
+        // 🔥 NEW: MQTT Discovery cho sensor
         publishDiscovery(macStr, v);
 
         // value1
@@ -130,7 +101,7 @@ void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePa
         mqtt.publish(topic1.c_str(), valueStr1.c_str());
         Serial.printf("[MQTT] → %s = %s\n", topic1.c_str(), valueStr1.c_str());
 
-        // value2 — chỉ publish nếu khác 0.00
+        // value2
         if (v.value2 != 0.0f) {
             String topic2 = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name + "/value2";
             String valueStr2 = String(v.value2, 2);
@@ -149,22 +120,19 @@ void MQTTGateway::publishSensorFrame(const uint8_t *mac, const SFM_SensorFramePa
     String uptimeStr = String(payload.uptimeMs);
     mqtt.publish(uptimeTopic.c_str(), uptimeStr.c_str());
     Serial.printf("[MQTT] → %s = %s\n", uptimeTopic.c_str(), uptimeStr.c_str());
-
-
-
 }
-//Hàm publishDiscovery() — tạo config cho từng sensor
+
+/* ============================================================
+   SENSOR DISCOVERY
+   ============================================================ */
 void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &v) {
     String base = String(MQTT_BASE_TOPIC) + "/" + macStr + "/" + v.name;
     String availabilityTopic = String(MQTT_BASE_TOPIC) + "/" + macStr + "/status";
 
-    // Lấy unit + device_class
     String unit, deviceClass;
     getSensorMeta(v.name, unit, deviceClass);
 
-    // -----------------------------
-    // Discovery cho VALUE1
-    // -----------------------------
+    // VALUE1
     {
         String uniqueId = macStr + "_" + v.name + "_value1";
         String configTopic = "homeassistant/sensor/" + uniqueId + "/config";
@@ -188,15 +156,10 @@ void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &
         payload += "}";
         payload += "}";
 
-        Serial.printf("[MQTT][DISCOVERY] → %s\n", configTopic.c_str());
-        Serial.println(payload);
-
         mqtt.publish(configTopic.c_str(), payload.c_str(), true);
     }
 
-    // -----------------------------
-    // Discovery cho VALUE2
-    // -----------------------------
+    // VALUE2
     {
         String uniqueId = macStr + "_" + v.name + "_value2";
         String configTopic = "homeassistant/sensor/" + uniqueId + "/config";
@@ -220,15 +183,119 @@ void MQTTGateway::publishDiscovery(const String &macStr, const SFM_SensorValue &
         payload += "}";
         payload += "}";
 
-        Serial.printf("[MQTT][DISCOVERY] → %s\n", configTopic.c_str());
-        Serial.println(payload);
-
         mqtt.publish(configTopic.c_str(), payload.c_str(), true);
     }
 }
 
+/* ============================================================
+   NEW V1.8 — NODE AUTO‑DISCOVERY
+   ============================================================ */
+void MQTTGateway::publishNodeDiscovery(const String &macStr) {
+    String base = String(MQTT_BASE_TOPIC) + "/" + macStr;
 
-//Get unit cho sensor
+    // ONLINE
+    {
+        String uid = macStr + "_online";
+        String topic = "homeassistant/binary_sensor/" + uid + "/config";
+
+        String payload = "{";
+        payload += "\"name\": \"Node " + macStr + " Online\",";
+        payload += "\"state_topic\": \"" + base + "/status\",";
+        payload += "\"payload_on\": \"online\",";
+        payload += "\"payload_off\": \"offline\",";
+        payload += "\"unique_id\": \"" + uid + "\",";
+        payload += "\"device\": {";
+        payload += "\"identifiers\": [\"" + macStr + "\"],";
+        payload += "\"name\": \"SmartFarm Node " + macStr + "\",";
+        payload += "\"manufacturer\": \"SmartFarm\",";
+        payload += "\"model\": \"MeshNode V1.8\"";
+        payload += "}";
+        payload += "}";
+
+        mqtt.publish(topic.c_str(), payload.c_str(), true);
+    }
+
+    // RSSI
+    {
+        String uid = macStr + "_rssi";
+        String topic = "homeassistant/sensor/" + uid + "/config";
+
+        String payload = "{";
+        payload += "\"name\": \"Node " + macStr + " RSSI\",";
+        payload += "\"state_topic\": \"" + base + "/rssi\",";
+        payload += "\"unit_of_measurement\": \"dBm\",";
+        payload += "\"device_class\": \"signal_strength\",";
+        payload += "\"unique_id\": \"" + uid + "\",";
+        payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
+        payload += "}";
+
+        mqtt.publish(topic.c_str(), payload.c_str(), true);
+    }
+
+    // UPTIME
+    {
+        String uid = macStr + "_uptime";
+        String topic = "homeassistant/sensor/" + uid + "/config";
+
+        String payload = "{";
+        payload += "\"name\": \"Node " + macStr + " Uptime\",";
+        payload += "\"state_topic\": \"" + base + "/uptimeMs\",";
+        payload += "\"unit_of_measurement\": \"ms\",";
+        payload += "\"unique_id\": \"" + uid + "\",";
+        payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
+        payload += "}";
+
+        mqtt.publish(topic.c_str(), payload.c_str(), true);
+    }
+
+    // LAST SEEN
+    {
+        String uid = macStr + "_last_seen";
+        String topic = "homeassistant/sensor/" + uid + "/config";
+
+        String payload = "{";
+        payload += "\"name\": \"Node " + macStr + " Last Seen\",";
+        payload += "\"state_topic\": \"" + base + "/last_seen\",";
+        payload += "\"device_class\": \"timestamp\",";
+        payload += "\"unique_id\": \"" + uid + "\",";
+        payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
+        payload += "}";
+
+        mqtt.publish(topic.c_str(), payload.c_str(), true);
+    }
+
+    // FIRMWARE
+    {
+        String uid = macStr + "_fw";
+        String topic = "homeassistant/sensor/" + uid + "/config";
+
+        String payload = "{";
+        payload += "\"name\": \"Node " + macStr + " Firmware\",";
+        payload += "\"state_topic\": \"" + base + "/fw_version\",";
+        payload += "\"unique_id\": \"" + uid + "\",";
+        payload += "\"device\": {\"identifiers\": [\"" + macStr + "\"]}";
+        payload += "}";
+
+        mqtt.publish(topic.c_str(), payload.c_str(), true);
+    }
+}
+
+/* ============================================================
+   NEW V1.8 — NODE STATUS
+   ============================================================ */
+void MQTTGateway::publishNodeStatus(const String &macStr, const SFM_HeartbeatPayload &hb) {
+    String base = String(MQTT_BASE_TOPIC) + "/" + macStr;
+
+    mqtt.publish((base + "/status").c_str(), "online");
+    mqtt.publish((base + "/rssi").c_str(), String(hb.rssi).c_str());
+    mqtt.publish((base + "/uptimeMs").c_str(), String(hb.uptimeMs).c_str());
+    mqtt.publish((base + "/last_seen").c_str(), String(millis()).c_str());
+    mqtt.publish((base + "/fw_version").c_str(), "V1.8");
+}
+
+/* ============================================================
+   SENSOR META
+   ============================================================ */
 void MQTTGateway::getSensorMeta(const String &name, String &unit, String &deviceClass) {
     if (name.equalsIgnoreCase("DS18B20") || name.indexOf("temp") >= 0) {
         unit = "°C";
